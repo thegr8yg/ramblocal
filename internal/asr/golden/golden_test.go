@@ -3,6 +3,7 @@ package golden
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,5 +51,28 @@ func TestLoadSyntheticFixture(t *testing.T) {
 func TestMaxAbsDiff(t *testing.T) {
 	if d := MaxAbsDiff([]float32{1, 2, 3}, []float32{1, 2.5, 2}); d != 1 {
 		t.Fatalf("MaxAbsDiff = %v", d)
+	}
+}
+
+func TestMaxAbsDiffNaN(t *testing.T) {
+	nan := float32(math.NaN())
+	const tol = 1e6
+	cases := []struct {
+		name string
+		a, b []float32
+	}{
+		{"nan in a", []float32{1, nan, 3}, []float32{1, 2, 3}},
+		{"nan in b", []float32{1, 2, 3}, []float32{nan, 2, 3}},
+		{"nan in both", []float32{nan}, []float32{nan}},
+		{"inf minus inf", []float32{float32(math.Inf(1))}, []float32{float32(math.Inf(1))}},
+	}
+	for _, c := range cases {
+		d := MaxAbsDiff(c.a, c.b)
+		if !math.IsInf(float64(d), 1) {
+			t.Errorf("%s: MaxAbsDiff = %v, want +Inf", c.name, d)
+		}
+		if !(d > tol) {
+			t.Errorf("%s: MaxAbsDiff = %v does not exceed tolerance %g", c.name, d, tol)
+		}
 	}
 }

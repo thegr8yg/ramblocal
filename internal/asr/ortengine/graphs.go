@@ -152,7 +152,11 @@ func (g *graphs) preprocess(pcm []float32) ([]float32, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	return trimFrames(data, int(shape[1]), int(shape[2]), valid), valid, nil
+	trimmed, err := trimFrames(data, int(shape[1]), int(shape[2]), valid)
+	if err != nil {
+		return nil, 0, err
+	}
+	return trimmed, valid, nil
 }
 
 // encode runs the encoder on [F, frames] features; returns [D, outFrames].
@@ -185,19 +189,26 @@ func (g *graphs) encode(feats []float32, frames int) ([]float32, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	return trimFrames(data, int(shape[1]), int(shape[2]), valid), valid, nil
+	trimmed, err := trimFrames(data, int(shape[1]), int(shape[2]), valid)
+	if err != nil {
+		return nil, 0, err
+	}
+	return trimmed, valid, nil
 }
 
 // trimFrames keeps the first `valid` columns of a [rows, cols] row-major matrix.
-func trimFrames(data []float32, rows, cols, valid int) []float32 {
-	if valid >= cols {
-		return data
+func trimFrames(data []float32, rows, cols, valid int) ([]float32, error) {
+	if valid < 0 || valid > cols {
+		return nil, fmt.Errorf("valid frames %d out of range [0, %d]", valid, cols)
+	}
+	if valid == cols {
+		return data, nil
 	}
 	out := make([]float32, rows*valid)
 	for r := 0; r < rows; r++ {
 		copy(out[r*valid:(r+1)*valid], data[r*cols:r*cols+valid])
 	}
-	return out
+	return out, nil
 }
 
 type lstmState struct{ h, c []float32 }
@@ -219,6 +230,9 @@ func (j *ortJoint) InitialState() asr.DecoderState {
 
 func (j *ortJoint) Step(t, last int, st asr.DecoderState) ([]float32, []float32, asr.DecoderState, error) {
 	m, dj := j.g.m, j.g.dj
+	if t < 0 || t >= j.frames {
+		return nil, nil, nil, fmt.Errorf("joint frame %d out of range [0, %d)", t, j.frames)
+	}
 	s := st.(lstmState)
 	frame := make([]float32, m.EncoderDim)
 	for d := range frame {

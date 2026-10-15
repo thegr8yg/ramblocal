@@ -101,10 +101,18 @@ func product(shape []int) int {
 }
 
 // MaxAbsDiff returns the largest |a[i]-b[i]| over the shorter length.
+// If any compared pair is NaN (or the difference is NaN), it returns +Inf so
+// that a comparison against a finite tolerance always fails.
 func MaxAbsDiff(a, b []float32) float32 {
 	var m float32
 	for i := 0; i < min(len(a), len(b)); i++ {
+		if math.IsNaN(float64(a[i])) || math.IsNaN(float64(b[i])) {
+			return float32(math.Inf(1))
+		}
 		d := a[i] - b[i]
+		if math.IsNaN(float64(d)) {
+			return float32(math.Inf(1))
+		}
 		if d < 0 {
 			d = -d
 		}
