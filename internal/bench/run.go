@@ -84,28 +84,53 @@ func Run(ctx context.Context, e asr.Engine, items []Item, load func(string) ([]f
 }
 
 // Score builds a report from hypotheses produced elsewhere (NeMo reference, Whisper baseline).
-func Score(engine string, items []Item, hyps []HypLine) (Report, error) {
+// durations maps each manifest audio path to its length in seconds, so AudioSec and RTF match Run.
+// Wall time, RTF and latency are reported only when every hypothesis carries Seconds > 0.
+func Score(engine string, items []Item, hyps []HypLine, durations map[string]float64) (Report, error) {
 	r := Report{Engine: engine, Date: time.Now().Format("2006-01-02"), Latency: map[string]Pct{}}
+	inManifest := make(map[string]bool, len(items))
+	for _, it := range items {
+		inManifest[it.Audio] = true
+	}
 	byAudio := make(map[string]HypLine, len(hyps))
 	for _, h := range hyps {
+		if _, dup := byAudio[h.Audio]; dup {
+			return r, fmt.Errorf("duplicate hypothesis for %s", h.Audio)
+		}
+		if !inManifest[h.Audio] {
+			return r, fmt.Errorf("hypothesis for %s is not in the manifest", h.Audio)
+		}
 		byAudio[h.Audio] = h
 	}
 	var corpus eval.Corpus
 	var totals []float64
+	timed := true
+	var wall float64
 	for _, it := range items {
 		h, ok := byAudio[it.Audio]
 		if !ok {
 			return r, fmt.Errorf("no hypothesis for %s", it.Audio)
 		}
+		d, ok := durations[it.Audio]
+		if !ok {
+			return r, fmt.Errorf("no duration for %s", it.Audio)
+		}
 		corpus.Add(it.Text, h.Hyp)
+		r.AudioSec += d
 		if h.Seconds > 0 {
 			totals = append(totals, h.Seconds*1000)
-			r.WallSec += h.Seconds
+			wall += h.Seconds
+		} else {
+			timed = false
 		}
 	}
 	r.Items = len(items)
 	r.WER = corpus.WER()
-	if len(totals) > 0 {
+	if timed && len(totals) > 0 {
+		r.WallSec = wall
+		if r.AudioSec > 0 {
+			r.RTF = wall / r.AudioSec
+		}
 		r.Latency["total"] = Percentiles(totals)
 	}
 	return r, nil

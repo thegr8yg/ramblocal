@@ -44,11 +44,48 @@ func TestRunWithFakeEngine(t *testing.T) {
 
 func TestScore(t *testing.T) {
 	items := []Item{{Audio: "a", Text: "one two"}, {Audio: "b", Text: "three"}}
-	r, err := Score("whisper", items, []HypLine{{Audio: "a", Hyp: "one two", Seconds: 0.1}, {Audio: "b", Hyp: "tree", Seconds: 0.3}})
+	durs := map[string]float64{"a": 2, "b": 1}
+	r, err := Score("whisper", items, []HypLine{{Audio: "a", Hyp: "one two", Seconds: 0.1}, {Audio: "b", Hyp: "tree", Seconds: 0.3}}, durs)
 	if err != nil || r.WER < 33.33 || r.WER > 33.34 || r.Latency["total"].Max != 300 {
 		t.Fatalf("%+v %v", r, err)
 	}
-	if _, err := Score("x", items, []HypLine{{Audio: "a", Hyp: "one two"}}); err == nil {
+	if r.AudioSec != 3 || r.WallSec < 0.399 || r.WallSec > 0.401 || r.RTF < 0.133 || r.RTF > 0.134 {
+		t.Fatalf("parity fields: %+v", r)
+	}
+	if _, err := Score("x", items, []HypLine{{Audio: "a", Hyp: "one two"}}, durs); err == nil {
 		t.Fatal("missing hypothesis: expected error")
+	}
+}
+
+func TestScorePartialTiming(t *testing.T) {
+	items := []Item{{Audio: "a", Text: "one two"}, {Audio: "b", Text: "three"}}
+	durs := map[string]float64{"a": 2, "b": 1}
+	r, err := Score("whisper", items, []HypLine{{Audio: "a", Hyp: "one two", Seconds: 0.1}, {Audio: "b", Hyp: "tree"}}, durs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.WallSec != 0 || r.RTF != 0 || r.AudioSec != 3 {
+		t.Fatalf("partial timing should not report wall/rtf: %+v", r)
+	}
+	if _, ok := r.Latency["total"]; ok {
+		t.Fatal("partial timing should not report latency")
+	}
+}
+
+func TestScoreDuplicateHyp(t *testing.T) {
+	items := []Item{{Audio: "a", Text: "one"}}
+	durs := map[string]float64{"a": 1}
+	hyps := []HypLine{{Audio: "a", Hyp: "one"}, {Audio: "a", Hyp: "two"}}
+	if _, err := Score("x", items, hyps, durs); err == nil {
+		t.Fatal("duplicate hypothesis: expected error")
+	}
+}
+
+func TestScoreUnknownHyp(t *testing.T) {
+	items := []Item{{Audio: "a", Text: "one"}}
+	durs := map[string]float64{"a": 1}
+	hyps := []HypLine{{Audio: "a", Hyp: "one"}, {Audio: "zzz", Hyp: "stray"}}
+	if _, err := Score("x", items, hyps, durs); err == nil {
+		t.Fatal("hypothesis not in manifest: expected error")
 	}
 }
