@@ -1,0 +1,10 @@
+/models/
+/bench/data/
+/bench/results/**/hyps-*.jsonl
+*.exe
+*.dll
+*.lib
+*.exp
+*.obj
+__pycache__/
+.venv/
