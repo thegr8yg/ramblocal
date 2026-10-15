@@ -94,6 +94,9 @@ func (e *Engine) Transcribe(ctx context.Context, pcm []float32, _ asr.Options) (
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
 	if e.g == nil {
 		return res, errors.New("engine closed")
 	}
@@ -101,26 +104,26 @@ func (e *Engine) Transcribe(ctx context.Context, pcm []float32, _ asr.Options) (
 	t0 := time.Now()
 	feats, frames, err := e.g.preprocess(pcm)
 	if err != nil {
-		return res, err
+		return res, fmt.Errorf("preprocess: %w", err)
 	}
 	t1 := time.Now()
 	enc, outFrames, err := e.g.encode(feats, frames)
 	if err != nil {
-		return res, err
+		return res, fmt.Errorf("encode: %w", err)
 	}
 	t2 := time.Now()
 	hyp, err := asr.GreedyTDT(ctx, e.g.joint(enc, outFrames), outFrames, e.m.BlankID, e.m.Durations, maxSymbolsPerFrame)
 	if err != nil {
-		return res, err
+		return res, fmt.Errorf("decode: %w", err)
 	}
 	t3 := time.Now()
 	text, err := e.tok.Decode(hyp.Tokens)
 	if err != nil {
-		return res, err
+		return res, fmt.Errorf("detokenize: %w", err)
 	}
 	words, err := e.tok.Words(hyp.Tokens, hyp.Frames, e.m.FrameSeconds())
 	if err != nil {
-		return res, err
+		return res, fmt.Errorf("detokenize: %w", err)
 	}
 	t4 := time.Now()
 
