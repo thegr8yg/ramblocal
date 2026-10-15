@@ -22,6 +22,20 @@ type Hyp struct {
 
 // GreedyTDT runs greedy Token-and-Duration Transducer decoding over numFrames encoder frames.
 func GreedyTDT(ctx context.Context, j Joint, numFrames, blankID int, durations []int, maxSymbolsPerFrame int) (Hyp, error) {
+	if len(durations) == 0 {
+		return Hyp{}, fmt.Errorf("tdt: durations must not be empty")
+	}
+	for _, d := range durations {
+		if d < 0 {
+			return Hyp{}, fmt.Errorf("tdt: negative duration %d", d)
+		}
+	}
+	if blankID < 0 {
+		return Hyp{}, fmt.Errorf("tdt: blankID %d must be >= 0", blankID)
+	}
+	if maxSymbolsPerFrame < 1 {
+		return Hyp{}, fmt.Errorf("tdt: maxSymbolsPerFrame %d must be >= 1", maxSymbolsPerFrame)
+	}
 	var h Hyp
 	state := j.InitialState()
 	last := blankID

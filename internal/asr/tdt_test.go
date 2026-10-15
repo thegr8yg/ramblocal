@@ -15,6 +15,7 @@ type scriptedJoint struct {
 	calls  int
 	frames []int
 	lasts  []int
+	states []int
 }
 
 func (s *scriptedJoint) InitialState() DecoderState { return 0 }
@@ -22,6 +23,7 @@ func (s *scriptedJoint) InitialState() DecoderState { return 0 }
 func (s *scriptedJoint) Step(t, last int, st DecoderState) ([]float32, []float32, DecoderState, error) {
 	s.frames = append(s.frames, t)
 	s.lasts = append(s.lasts, last)
+	s.states = append(s.states, st.(int))
 	step := s.script[min(s.calls, len(s.script)-1)]
 	s.calls++
 	tok := make([]float32, s.vocab+1)
@@ -48,6 +50,34 @@ func TestGreedyTDTBasic(t *testing.T) {
 	}
 	if !slices.Equal(j.lasts, []int{10, 3, 4, 4}) {
 		t.Fatalf("lastToken sequence %v (blank must not change lastToken)", j.lasts)
+	}
+	if !slices.Equal(j.states, []int{0, 1, 2, 2}) {
+		t.Fatalf("state sequence %v (want [0 1 2 2]: blank must not advance state)", j.states)
+	}
+}
+
+func TestGreedyTDTRejectsBadConfig(t *testing.T) {
+	cases := []struct {
+		name      string
+		blankID   int
+		durations []int
+		maxSym    int
+	}{
+		{"empty durations", 10, nil, 10},
+		{"negative duration", 10, []int{0, -1, 2}, 10},
+		{"negative blank id", -1, durs, 10},
+		{"zero maxSymbolsPerFrame", 10, durs, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			j := &scriptedJoint{vocab: 10, nDur: 5, script: [][2]int{{10, 1}}}
+			if _, err := GreedyTDT(context.Background(), j, 3, tc.blankID, tc.durations, tc.maxSym); err == nil {
+				t.Fatal("expected error")
+			}
+			if j.calls != 0 {
+				t.Fatalf("joint called %d times, want 0", j.calls)
+			}
+		})
 	}
 }
 
