@@ -119,3 +119,113 @@ func TestErrors(t *testing.T) {
 		t.Fatalf("8-bit: %v", err)
 	}
 }
+
+// riffRaw builds a RIFF/WAVE file from pre-encoded chunks, with no implicit fmt or data chunk.
+func riffRaw(chunks ...[]byte) []byte {
+	body := append([]byte("WAVE"), bytes.Join(chunks, nil)...)
+	var out bytes.Buffer
+	out.WriteString("RIFF")
+	binary.Write(&out, binary.LittleEndian, uint32(len(body)))
+	out.Write(body)
+	return out.Bytes()
+}
+
+// chunkRaw encodes one RIFF chunk, padded to an even length.
+func chunkRaw(id string, b []byte) []byte {
+	var out bytes.Buffer
+	out.WriteString(id)
+	binary.Write(&out, binary.LittleEndian, uint32(len(b)))
+	out.Write(b)
+	if len(b)%2 == 1 {
+		out.WriteByte(0)
+	}
+	return out.Bytes()
+}
+
+func TestMalformedInput(t *testing.T) {
+	pcm16 := func(vals ...int16) []byte {
+		b := make([]byte, 2*len(vals))
+		for i, v := range vals {
+			binary.LittleEndian.PutUint16(b[2*i:], uint16(v))
+		}
+		return b
+	}
+
+	// Truncated data chunk: copy of a valid file with the data size field inflated.
+	truncData := pcm16(16384, -16384)
+	truncated := buildWAV(fmtChunk(1, 1, 16000, 16), nil, truncData)
+	binary.LittleEndian.PutUint32(truncated[len(truncated)-len(truncData)-4:], 1000)
+
+	// Extensible fmt chunk, 18 bytes: long enough for the base header, too short for SubFormat.
+	shortExt := append(fmtChunk(0xFFFE, 1, 16000, 16), 0, 0) // 16 + cbSize = 18 bytes
+
+	// 32-bit PCM value 0x40000000 = 0.5 * 2^31.
+	pcm32 := make([]byte, 4)
+	binary.LittleEndian.PutUint32(pcm32, 0x40000000)
+
+	cases := []struct {
+		name    string
+		in      []byte
+		wantErr error
+		want    []float32
+	}{
+		{
+			name: "truncated data chunk decodes available samples",
+			in:   truncated,
+			want: []float32{0.5, -0.5},
+		},
+		{
+			name:    "fmt chunk shorter than 16 bytes",
+			in:      buildWAV(make([]byte, 14), nil, pcm16(16384)),
+			wantErr: ErrNotWAV,
+		},
+		{
+			name:    "extensible fmt chunk shorter than 26 bytes",
+			in:      buildWAV(shortExt, nil, pcm16(16384)),
+			wantErr: ErrNotWAV,
+		},
+		{
+			name:    "zero channels",
+			in:      buildWAV(fmtChunk(1, 0, 16000, 16), nil, pcm16(16384)),
+			wantErr: ErrUnsupportedFormat,
+		},
+		{
+			name:    "fmt chunk without data chunk",
+			in:      riffRaw(chunkRaw("fmt ", fmtChunk(1, 1, 16000, 16))),
+			wantErr: ErrNotWAV,
+		},
+		{
+			name:    "data chunk without fmt chunk",
+			in:      riffRaw(chunkRaw("data", pcm16(16384))),
+			wantErr: ErrNotWAV,
+		},
+		{
+			name: "32-bit PCM 0x40000000 decodes to 0.5",
+			in:   buildWAV(fmtChunk(1, 1, 16000, 32), nil, pcm32),
+			want: []float32{0.5},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, rate, err := ReadWAV(bytes.NewReader(tc.in))
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err=%v, want wrapping %v", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || rate != 16000 {
+				t.Fatalf("rate=%d err=%v", rate, err)
+			}
+			if len(out) != len(tc.want) {
+				t.Fatalf("got %d samples %v, want %d", len(out), out, len(tc.want))
+			}
+			for i := range tc.want {
+				if !near(out[i], tc.want[i]) {
+					t.Fatalf("sample %d: %v != %v", i, out[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
