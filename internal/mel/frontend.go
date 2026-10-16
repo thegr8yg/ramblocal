@@ -7,6 +7,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
+	"sync/atomic"
 
 	"github.com/thegr8yg/ramblocal/internal/asr"
 )
@@ -104,10 +107,59 @@ func readF32(path string, n int) ([]float64, error) {
 	return out, nil
 }
 
+const (
+	// minParallelFrames is the frame count below which Compute stays serial.
+	minParallelFrames = 64
+	// maxWorkers caps the worker pool.
+	maxWorkers = 8
+	// frameChunk is the number of consecutive frames a worker claims at a time.
+	frameChunk = 16
+	// maxPooledElems bounds the call-level buffers kept in the pool (float64 elements).
+	maxPooledElems = 1 << 22
+)
+
+// frameScratch is the per-worker scratch of the per-frame path.
+type frameScratch struct {
+	zr, zi, power, melCol []float64
+}
+
+// callBuffers are the large per-call buffers (padded signal, mel matrix).
+type callBuffers struct {
+	padded, mel []float64
+}
+
+var (
+	frameScratchPool sync.Pool // *frameScratch
+	callBuffersPool  sync.Pool // *callBuffers
+)
+
+func grow(s []float64, n int) []float64 {
+	if cap(s) < n {
+		return make([]float64, n)
+	}
+	return s[:n]
+}
+
+func (f *Frontend) getScratch() *frameScratch {
+	s, _ := frameScratchPool.Get().(*frameScratch)
+	if s == nil {
+		s = new(frameScratch)
+	}
+	s.zr = grow(s.zr, f.plan.m)
+	s.zi = grow(s.zi, f.plan.m)
+	s.power = grow(s.power, f.bins)
+	s.melCol = grow(s.melCol, f.nMel)
+	return s
+}
+
 // Compute returns row-major feats [NumFeatures, width], plus width and valid.
 // width = 1 + len(pcm)/hop STFT frames; only the first valid = len(pcm)/hop columns
 // are normalized and meaningful, the remaining column is exactly zero (NeMo's
 // masked padding). Inputs with valid < 2 yield (nil, 0, 0), as NeMo rejects them.
+//
+// Frames are independent, so they are computed by a bounded worker pool; every
+// output element is produced by the same sequential arithmetic regardless of the
+// worker count, so the result is bit-identical for any GOMAXPROCS.
 func (f *Frontend) Compute(pcm []float32) (feats []float32, width, valid int) {
 	c := f.cfg
 	n, hop, nfft := len(pcm), c.HopLength, c.NFFT
@@ -117,60 +169,122 @@ func (f *Frontend) Compute(pcm []float32) (feats []float32, width, valid int) {
 	}
 	width = 1 + n/hop
 
+	buf, _ := callBuffersPool.Get().(*callBuffers)
+	if buf == nil {
+		buf = new(callBuffers)
+	}
+	buf.padded = grow(buf.padded, n+nfft)
+	buf.mel = grow(buf.mel, f.nMel*width)
+	padded, mel := buf.padded, buf.mel
+
 	// Preemphasis then zero padding of nfft/2 on both sides (center=True, constant).
 	pad := nfft / 2
-	padded := make([]float64, n+nfft)
+	clear(padded[:pad])
+	clear(padded[pad+n:])
 	padded[pad] = float64(pcm[0])
 	for i := 1; i < n; i++ {
 		padded[pad+i] = float64(pcm[i]) - c.Preemph*float64(pcm[i-1])
 	}
 
-	off := (nfft - c.WinLength) / 2
-	half := nfft / 2
-	zr := make([]float64, half)
-	zi := make([]float64, half)
-	power := make([]float64, f.bins)
-	mel := make([]float64, f.nMel*width)
-	melCol := make([]float64, f.nMel)
-	for t := 0; t < width; t++ {
-		frame := padded[t*hop : t*hop+nfft]
-		clear(zr)
-		clear(zi)
-		for j, w := range f.win {
-			// even samples -> real part, odd -> imaginary part, in bit-reversed slots
-			if v, idx := frame[off+j]*w, f.plan.slot(off+j); (off+j)&1 == 0 {
-				zr[idx] = v
-			} else {
-				zi[idx] = v
-			}
+	workers := min(runtime.GOMAXPROCS(0), maxWorkers, (width+frameChunk-1)/frameChunk)
+	if width < minParallelFrames {
+		workers = 1
+	}
+	if workers <= 1 {
+		s := f.getScratch()
+		f.frames(padded, mel, width, 0, width, s)
+		frameScratchPool.Put(s)
+	} else {
+		var next atomic.Int64
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				s := f.getScratch()
+				defer frameScratchPool.Put(s)
+				for {
+					lo := int(next.Add(frameChunk)) - frameChunk
+					if lo >= width {
+						return
+					}
+					f.frames(padded, mel, width, lo, min(lo+frameChunk, width), s)
+				}
+			}()
 		}
-		f.plan.power(zr, zi, power)
-		f.applyFilterbank(power, melCol)
-		for m, s := range melCol {
-			mel[m*width+t] = math.Log(s + c.LogGuard)
-		}
+		wg.Wait()
 	}
 
 	// Per-feature normalization over the valid frames only (Bessel-corrected std).
 	feats = make([]float32, f.nMel*width)
-	for m := 0; m < f.nMel; m++ {
-		row := mel[m*width : m*width+valid]
-		var mean float64
-		for _, v := range row {
-			mean += v
-		}
-		mean /= float64(valid)
-		var ss float64
-		for _, v := range row {
-			d := v - mean
-			ss += d * d
-		}
-		std := math.Sqrt(ss/float64(valid-1)) + c.NormEps
-		out := feats[m*width : m*width+valid]
-		for t, v := range row {
-			out[t] = float32((v - mean) / std)
-		}
-		// column t = valid stays exactly 0
+	f.normalize(mel, feats, width, valid, workers)
+
+	if len(buf.padded) <= maxPooledElems && len(buf.mel) <= maxPooledElems {
+		callBuffersPool.Put(buf)
 	}
 	return feats, width, valid
+}
+
+// frames computes log-mel columns [lo, hi) into mel (row-major [nMel, width]).
+func (f *Frontend) frames(padded, mel []float64, width, lo, hi int, s *frameScratch) {
+	hop, nfft := f.cfg.HopLength, f.cfg.NFFT
+	off := (nfft - f.cfg.WinLength) / 2
+	for t := lo; t < hi; t++ {
+		frame := padded[t*hop : t*hop+nfft]
+		clear(s.zr)
+		clear(s.zi)
+		for j, w := range f.win {
+			// even samples -> real part, odd -> imaginary part, in bit-reversed slots
+			if v, idx := frame[off+j]*w, f.plan.slot(off+j); (off+j)&1 == 0 {
+				s.zr[idx] = v
+			} else {
+				s.zi[idx] = v
+			}
+		}
+		f.plan.power(s.zr, s.zi, s.power)
+		f.applyFilterbank(s.power, s.melCol)
+		for m, v := range s.melCol {
+			mel[m*width+t] = math.Log(v + f.cfg.LogGuard)
+		}
+	}
+}
+
+// normalize applies per-row mean/std normalization over the first valid columns;
+// column t = valid stays exactly 0. Rows are independent, so they are split across
+// workers without affecting the result.
+func (f *Frontend) normalize(mel []float64, feats []float32, width, valid, workers int) {
+	rows := func(lo, hi int) {
+		for m := lo; m < hi; m++ {
+			row := mel[m*width : m*width+valid]
+			var mean float64
+			for _, v := range row {
+				mean += v
+			}
+			mean /= float64(valid)
+			var ss float64
+			for _, v := range row {
+				d := v - mean
+				ss += d * d
+			}
+			std := math.Sqrt(ss/float64(valid-1)) + f.cfg.NormEps
+			out := feats[m*width : m*width+valid]
+			for t, v := range row {
+				out[t] = float32((v - mean) / std)
+			}
+		}
+	}
+	if workers <= 1 {
+		rows(0, f.nMel)
+		return
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		lo, hi := w*f.nMel/workers, (w+1)*f.nMel/workers
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rows(lo, hi)
+		}()
+	}
+	wg.Wait()
 }
