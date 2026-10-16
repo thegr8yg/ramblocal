@@ -15,22 +15,37 @@ type Graph struct {
 	DTypes  map[string]string `json:"dtypes"`
 }
 
+// Frontend describes the NeMo log-mel frontend computed in Go. Filterbank and Window name
+// little-endian float32 files in the model directory. Optional: old manifests omit it and
+// use the preprocessor graph instead.
+type Frontend struct {
+	NFFT       int     `json:"n_fft"`
+	WinLength  int     `json:"win_length"`
+	HopLength  int     `json:"hop_length"`
+	Preemph    float64 `json:"preemph"`
+	LogGuard   float64 `json:"log_guard"`
+	NormEps    float64 `json:"norm_eps"`
+	Filterbank string  `json:"filterbank"`
+	Window     string  `json:"window"`
+}
+
 // Manifest is written by tools/export/export_parakeet.py; it is the only source of model facts.
 type Manifest struct {
-	Name         string  `json:"name"`
-	SampleRate   int     `json:"sample_rate"`
-	NumFeatures  int     `json:"num_features"`
-	HopSeconds   float64 `json:"hop_seconds"`
-	Subsampling  int     `json:"subsampling"`
-	EncoderDim   int     `json:"encoder_dim"`
-	VocabSize    int     `json:"vocab_size"`
-	BlankID      int     `json:"blank_id"`
-	Durations    []int   `json:"tdt_durations"`
-	PredLayers   int     `json:"pred_layers"`
-	PredHidden   int     `json:"pred_hidden"`
-	Preprocessor Graph   `json:"preprocessor"`
-	Encoder      Graph   `json:"encoder"`
-	DecoderJoint Graph   `json:"decoder_joint"`
+	Name         string    `json:"name"`
+	SampleRate   int       `json:"sample_rate"`
+	NumFeatures  int       `json:"num_features"`
+	HopSeconds   float64   `json:"hop_seconds"`
+	Subsampling  int       `json:"subsampling"`
+	EncoderDim   int       `json:"encoder_dim"`
+	VocabSize    int       `json:"vocab_size"`
+	BlankID      int       `json:"blank_id"`
+	Durations    []int     `json:"tdt_durations"`
+	PredLayers   int       `json:"pred_layers"`
+	PredHidden   int       `json:"pred_hidden"`
+	Preprocessor Graph     `json:"preprocessor"`
+	Encoder      Graph     `json:"encoder"`
+	DecoderJoint Graph     `json:"decoder_joint"`
+	Frontend     *Frontend `json:"frontend"`
 }
 
 func LoadManifest(path string) (*Manifest, error) {
@@ -72,5 +87,14 @@ func (m *Manifest) validate() error {
 	check(m.Preprocessor.File != "" && len(m.Preprocessor.Inputs) == 2 && len(m.Preprocessor.Outputs) == 2, "preprocessor needs file, 2 inputs, 2 outputs")
 	check(m.Encoder.File != "" && len(m.Encoder.Inputs) == 2 && len(m.Encoder.Outputs) == 2, "encoder needs file, 2 inputs, 2 outputs")
 	check(m.DecoderJoint.File != "" && len(m.DecoderJoint.Inputs) == 5 && len(m.DecoderJoint.Outputs) == 4, "decoder_joint needs file, 5 inputs, 4 outputs")
+	if f := m.Frontend; f != nil {
+		check(f.NFFT >= 2 && f.NFFT&(f.NFFT-1) == 0, "frontend.n_fft must be a power of two >= 2")
+		check(f.WinLength > 0 && f.WinLength <= f.NFFT, "frontend.win_length must be in (0, n_fft]")
+		check(f.HopLength > 0, "frontend.hop_length must be > 0")
+		check(f.LogGuard > 0, "frontend.log_guard must be > 0")
+		check(f.NormEps >= 0, "frontend.norm_eps must be >= 0")
+		check(f.Filterbank != "", "frontend.filterbank must not be empty")
+		check(f.Window != "", "frontend.window must not be empty")
+	}
 	return errors.Join(errs...)
 }
