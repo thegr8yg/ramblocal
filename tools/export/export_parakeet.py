@@ -60,6 +60,59 @@ class Pre(torch.nn.Module):
         return self.p(input_signal=waveforms, length=waveforms_lens)
 
 
+def load_model(name):
+    """A freshly restored, eval-mode NeMo model configured for deterministic greedy TDT decoding."""
+    m = nemo_asr.models.ASRModel.from_pretrained(name, map_location="cpu").eval()
+    m.preprocessor.featurizer.dither = 0.0
+    m.preprocessor.featurizer.pad_to = 0
+    dc = m.cfg.decoding
+    with open_dict(dc):
+        dc.strategy = "greedy"
+        dc.greedy.max_symbols = 10
+    m.change_decoding_strategy(dc)
+    return m
+
+
+def write_golden(model_name, wavs, gold):
+    """Write <clip>.wav/.json/.mel.f32/.enc.f32 per clip.
+
+    Every clip gets a FRESH model: NeMo's transcribe() (and export) change model state, and the encoder
+    output on later clips then differs from a clean model by up to 0.7 (different tokens on rare words).
+    The exported ONNX graphs match the clean state to ~1e-5, so the clean state is the reference.
+    """
+    gold.mkdir(parents=True, exist_ok=True)
+    for wav in wavs:
+        m = load_model(model_name)
+        wav = pathlib.Path(wav)
+        name = wav.stem
+        audio, sr = sf.read(wav, dtype="float32")
+        if sr != 16000 or audio.ndim != 1:
+            raise SystemExit(f"{wav}: need 16 kHz mono (got sr={sr}, ndim={audio.ndim})")
+        # Write the committed PCM_16 clip first, then derive every fixture from the round-tripped file.
+        out_wav = gold / f"{name}.wav"
+        sf.write(out_wav, audio, 16000, subtype="PCM_16")
+        audio_rt, _ = sf.read(out_wav, dtype="float32")
+        x = torch.from_numpy(audio_rt)[None]
+        xl = torch.tensor([x.shape[1]])
+        with torch.no_grad():
+            feats, fl = m.preprocessor(input_signal=x, length=xl)
+            enc, el = m.encoder(audio_signal=feats, length=fl)
+        hyp = m.transcribe([str(out_wav)], return_hypotheses=True)[0]
+        if isinstance(hyp, list):
+            hyp = hyp[0]
+        mel = feats[0, :, : int(fl[0])].numpy().astype("<f4")
+        e = enc[0, :, : int(el[0])].numpy().astype("<f4")
+        np.ascontiguousarray(mel).tofile(gold / f"{name}.mel.f32")
+        np.ascontiguousarray(e).tofile(gold / f"{name}.enc.f32")
+        (gold / f"{name}.json").write_text(json.dumps({
+            "tokens": [int(t) for t in hyp.y_sequence],
+            "text": hyp.text,
+            "mel_shape": list(mel.shape),
+            "enc_shape": list(e.shape),
+        }, indent=2))
+        print(f"{name}: {hyp.text}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="nvidia/parakeet-tdt-0.6b-v2")
@@ -74,15 +127,9 @@ def main():
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    m = nemo_asr.models.ASRModel.from_pretrained(args.model, map_location="cpu").eval()
-    m.preprocessor.featurizer.dither = 0.0
-    m.preprocessor.featurizer.pad_to = 0
-
-    dc = m.cfg.decoding
-    with open_dict(dc):
-        dc.strategy = "greedy"
-        dc.greedy.max_symbols = 10
-    m.change_decoding_strategy(dc)
+    # Golden fixtures use a fresh model per clip (see write_golden); export gets its own model below.
+    write_golden(args.model, args.golden_wavs, pathlib.Path(args.golden_out))
+    m = load_model(args.model)
 
     # Encoder + decoder_joint via NeMo's exporter, into a temp dir so no duplicate weights stay in <out>.
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -140,38 +187,6 @@ def main():
         },
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
-
-    gold = pathlib.Path(args.golden_out)
-    gold.mkdir(parents=True, exist_ok=True)
-    for wav in args.golden_wavs:
-        wav = pathlib.Path(wav)
-        name = wav.stem
-        audio, sr = sf.read(wav, dtype="float32")
-        if sr != 16000 or audio.ndim != 1:
-            raise SystemExit(f"{wav}: need 16 kHz mono (got sr={sr}, ndim={audio.ndim})")
-        # Write the committed PCM_16 clip first, then derive every fixture from the round-tripped file.
-        out_wav = gold / f"{name}.wav"
-        sf.write(out_wav, audio, 16000, subtype="PCM_16")
-        audio_rt, _ = sf.read(out_wav, dtype="float32")
-        x = torch.from_numpy(audio_rt)[None]
-        xl = torch.tensor([x.shape[1]])
-        with torch.no_grad():
-            feats, fl = m.preprocessor(input_signal=x, length=xl)
-            enc, el = m.encoder(audio_signal=feats, length=fl)
-        hyp = m.transcribe([str(out_wav)], return_hypotheses=True)[0]
-        if isinstance(hyp, list):
-            hyp = hyp[0]
-        mel = feats[0, :, : int(fl[0])].numpy().astype("<f4")
-        e = enc[0, :, : int(el[0])].numpy().astype("<f4")
-        np.ascontiguousarray(mel).tofile(gold / f"{name}.mel.f32")
-        np.ascontiguousarray(e).tofile(gold / f"{name}.enc.f32")
-        (gold / f"{name}.json").write_text(json.dumps({
-            "tokens": [int(t) for t in hyp.y_sequence],
-            "text": hyp.text,
-            "mel_shape": list(mel.shape),
-            "enc_shape": list(e.shape),
-        }, indent=2))
-        print(f"{name}: {hyp.text}")
 
 
 if __name__ == "__main__":
