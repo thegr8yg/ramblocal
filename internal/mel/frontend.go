@@ -17,9 +17,15 @@ type Frontend struct {
 	cfg  asr.Frontend
 	nMel int
 	bins int
-	fb   []float64 // [nMel, bins] row-major
+	fb   []float64 // [nMel, bins] row-major (dense reference; Compute uses the banded copy)
 	win  []float64 // WinLength samples
 	plan *fftPlan
+
+	// Banded filterbank: row m's non-zero weights live in bins [bandLo[m], bandHi[m])
+	// and are stored contiguously in bandW starting at bandOff[m]. Bins outside the
+	// band are exactly 0.0, so skipping them leaves the dense sum unchanged bit for bit.
+	bandLo, bandHi, bandOff []int
+	bandW                   []float64
 }
 
 // New loads the filterbank and window files named by the manifest's frontend section.
@@ -42,7 +48,45 @@ func New(dir string, m *asr.Manifest) (*Frontend, error) {
 	if f.win, err = readF32(filepath.Join(dir, c.Window), c.WinLength); err != nil {
 		return nil, fmt.Errorf("mel window: %w", err)
 	}
+	f.buildBands()
 	return f, nil
+}
+
+// buildBands derives the per-row non-zero band of the filterbank from f.fb.
+func (f *Frontend) buildBands() {
+	f.bandLo = make([]int, f.nMel)
+	f.bandHi = make([]int, f.nMel)
+	f.bandOff = make([]int, f.nMel)
+	f.bandW = f.bandW[:0]
+	for m := 0; m < f.nMel; m++ {
+		row := f.fb[m*f.bins : (m+1)*f.bins]
+		lo, hi := 0, 0
+		for k, w := range row {
+			if w != 0 {
+				if hi == 0 {
+					lo = k
+				}
+				hi = k + 1
+			}
+		}
+		f.bandLo[m], f.bandHi[m], f.bandOff[m] = lo, hi, len(f.bandW)
+		f.bandW = append(f.bandW, row[lo:hi]...)
+	}
+}
+
+// applyFilterbank writes out[m] = sum_k fb[m][k]*power[k] for every mel row, visiting
+// only each row's non-zero band (same summation order as the dense product).
+func (f *Frontend) applyFilterbank(power, out []float64) {
+	for m := 0; m < f.nMel; m++ {
+		lo, hi, off := f.bandLo[m], f.bandHi[m], f.bandOff[m]
+		w := f.bandW[off : off+hi-lo]
+		p := power[lo:hi]
+		var s float64
+		for k, wk := range w {
+			s += wk * p[k]
+		}
+		out[m] = s
+	}
 }
 
 func readF32(path string, n int) ([]float64, error) {
@@ -85,6 +129,7 @@ func (f *Frontend) Compute(pcm []float32) (feats []float32, width, valid int) {
 	re := make([]float64, nfft)
 	im := make([]float64, nfft)
 	mel := make([]float64, f.nMel*width)
+	melCol := make([]float64, f.nMel)
 	for t := 0; t < width; t++ {
 		frame := padded[t*hop : t*hop+nfft]
 		clear(re)
@@ -97,12 +142,8 @@ func (f *Frontend) Compute(pcm []float32) (feats []float32, width, valid int) {
 		for k := 0; k < f.bins; k++ {
 			power[k] = re[k]*re[k] + im[k]*im[k]
 		}
-		for m := 0; m < f.nMel; m++ {
-			row := f.fb[m*f.bins : (m+1)*f.bins]
-			var s float64
-			for k, w := range row {
-				s += w * power[k]
-			}
+		f.applyFilterbank(power, melCol)
+		for m, s := range melCol {
 			mel[m*width+t] = math.Log(s + c.LogGuard)
 		}
 	}
