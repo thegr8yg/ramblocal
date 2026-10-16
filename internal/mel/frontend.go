@@ -19,7 +19,7 @@ type Frontend struct {
 	bins int
 	fb   []float64 // [nMel, bins] row-major (dense reference; Compute uses the banded copy)
 	win  []float64 // WinLength samples
-	plan *fftPlan
+	plan *realFFTPlan
 
 	// Banded filterbank: row m's non-zero weights live in bins [bandLo[m], bandHi[m])
 	// and are stored contiguously in bandW starting at bandOff[m]. Bins outside the
@@ -34,7 +34,7 @@ func New(dir string, m *asr.Manifest) (*Frontend, error) {
 		return nil, errors.New("mel: manifest has no frontend section")
 	}
 	c := *m.Frontend
-	plan, err := newFFTPlan(c.NFFT)
+	plan, err := newRealFFTPlan(c.NFFT)
 	if err != nil {
 		return nil, fmt.Errorf("mel: %w", err)
 	}
@@ -126,22 +126,25 @@ func (f *Frontend) Compute(pcm []float32) (feats []float32, width, valid int) {
 	}
 
 	off := (nfft - c.WinLength) / 2
-	re := make([]float64, nfft)
-	im := make([]float64, nfft)
+	half := nfft / 2
+	zr := make([]float64, half)
+	zi := make([]float64, half)
+	power := make([]float64, f.bins)
 	mel := make([]float64, f.nMel*width)
 	melCol := make([]float64, f.nMel)
 	for t := 0; t < width; t++ {
 		frame := padded[t*hop : t*hop+nfft]
-		clear(re)
-		clear(im)
+		clear(zr)
+		clear(zi)
 		for j, w := range f.win {
-			re[off+j] = frame[off+j] * w
+			// even samples -> real part, odd -> imaginary part, in bit-reversed slots
+			if v, idx := frame[off+j]*w, f.plan.slot(off+j); (off+j)&1 == 0 {
+				zr[idx] = v
+			} else {
+				zi[idx] = v
+			}
 		}
-		f.plan.transform(re, im)
-		power := re[:f.bins] // reuse: re[k]^2+im[k]^2 into re[k]
-		for k := 0; k < f.bins; k++ {
-			power[k] = re[k]*re[k] + im[k]*im[k]
-		}
+		f.plan.power(zr, zi, power)
 		f.applyFilterbank(power, melCol)
 		for m, s := range melCol {
 			mel[m*width+t] = math.Log(s + c.LogGuard)
