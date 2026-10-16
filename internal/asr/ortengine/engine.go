@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/thegr8yg/ramblocal/internal/asr"
+	"github.com/thegr8yg/ramblocal/internal/mel"
 )
 
 // MinSamples: clips shorter than 100 ms return an empty Result without running the model.
@@ -28,6 +29,7 @@ type Engine struct {
 	m   *asr.Manifest
 	tok *asr.Tokenizer
 	g   *graphs
+	mel *mel.Frontend // nil when the manifest has no frontend section (legacy ONNX preprocessor)
 	ep  string
 }
 
@@ -52,6 +54,12 @@ func New(cfg Config) (*Engine, error) {
 	if tok.Size() != m.VocabSize {
 		return nil, fmt.Errorf("vocab.txt has %d pieces, manifest vocab_size %d", tok.Size(), m.VocabSize)
 	}
+	var fe *mel.Frontend
+	if m.Frontend != nil {
+		if fe, err = mel.New(cfg.ModelDir, m); err != nil {
+			return nil, err
+		}
+	}
 	eps := cfg.EPs
 	if len(eps) == 0 {
 		eps = []string{"cuda", "dml", "cpu"}
@@ -60,7 +68,7 @@ func New(cfg Config) (*Engine, error) {
 	for _, ep := range eps {
 		g, err := openGraphs(cfg.ModelDir, m, ep)
 		if err == nil {
-			e := &Engine{m: m, tok: tok, g: g, ep: ep}
+			e := &Engine{m: m, tok: tok, g: g, mel: fe, ep: ep}
 			if _, err = e.Transcribe(context.Background(), make([]float32, asr.SampleRate), asr.Options{}); err == nil {
 				return e, nil
 			}
@@ -102,12 +110,22 @@ func (e *Engine) Transcribe(ctx context.Context, pcm []float32, _ asr.Options) (
 	}
 
 	t0 := time.Now()
-	feats, frames, err := e.g.preprocess(pcm)
-	if err != nil {
-		return res, fmt.Errorf("preprocess: %w", err)
+	var feats []float32
+	var width, valid int
+	if e.mel != nil {
+		feats, width, valid = e.mel.Compute(pcm)
+		if valid == 0 {
+			return res, fmt.Errorf("mel: %d samples too short for the frontend", len(pcm))
+		}
+	} else {
+		var err error
+		if feats, valid, err = e.g.preprocess(pcm); err != nil {
+			return res, fmt.Errorf("preprocess: %w", err)
+		}
+		width = valid
 	}
 	t1 := time.Now()
-	enc, outFrames, err := e.g.encode(feats, frames)
+	enc, outFrames, err := e.g.encode(feats, width, valid)
 	if err != nil {
 		return res, fmt.Errorf("encode: %w", err)
 	}

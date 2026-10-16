@@ -1,6 +1,7 @@
 package ortengine
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -104,8 +105,11 @@ type graphs struct {
 func openGraphs(dir string, m *asr.Manifest, ep string) (*graphs, error) {
 	g := &graphs{m: m}
 	var err error
-	if g.pre, err = openGraph(dir, m.Preprocessor, ep); err != nil {
-		return nil, err
+	// The ONNX preprocessor is only the fallback for manifests without a frontend section.
+	if m.Frontend == nil {
+		if g.pre, err = openGraph(dir, m.Preprocessor, ep); err != nil {
+			return nil, err
+		}
 	}
 	if g.enc, err = openGraph(dir, m.Encoder, ep); err != nil {
 		g.close()
@@ -126,8 +130,12 @@ func (g *graphs) close() {
 	}
 }
 
-// preprocess returns log-mel features laid out [F, frames] and the valid frame count.
+// preprocess is the legacy ONNX preprocessor path (manifests without a frontend section).
+// It returns log-mel features laid out [F, valid] and the valid frame count.
 func (g *graphs) preprocess(pcm []float32) ([]float32, int, error) {
+	if g.pre == nil {
+		return nil, 0, errors.New("preprocessor graph not opened (manifest has a frontend section)")
+	}
 	w, err := floatTensor(ort.NewShape(1, int64(len(pcm))), pcm)
 	if err != nil {
 		return nil, 0, err
@@ -159,14 +167,19 @@ func (g *graphs) preprocess(pcm []float32) ([]float32, int, error) {
 	return trimmed, valid, nil
 }
 
-// encode runs the encoder on [F, frames] features; returns [D, outFrames].
-func (g *graphs) encode(feats []float32, frames int) ([]float32, int, error) {
+// encode runs the encoder on the full-width [F, width] features with length = valid
+// (NeMo feeds the zero-masked padding columns and passes the valid count separately);
+// returns [D, outFrames].
+func (g *graphs) encode(feats []float32, width, valid int) ([]float32, int, error) {
 	f := g.m.NumFeatures
-	x, err := floatTensor(ort.NewShape(1, int64(f), int64(frames)), feats)
+	if valid < 0 || valid > width || len(feats) != f*width {
+		return nil, 0, fmt.Errorf("encode: %d feats for width %d valid %d, want %d", len(feats), width, valid, f*width)
+	}
+	x, err := floatTensor(ort.NewShape(1, int64(f), int64(width)), feats)
 	if err != nil {
 		return nil, 0, err
 	}
-	l, err := intTensor(g.enc.inDType(1), ort.NewShape(1), int64(frames))
+	l, err := intTensor(g.enc.inDType(1), ort.NewShape(1), int64(valid))
 	if err != nil {
 		x.Destroy()
 		return nil, 0, err
@@ -185,15 +198,15 @@ func (g *graphs) encode(feats []float32, frames int) ([]float32, int, error) {
 	if int(shape[1]) != g.m.EncoderDim {
 		return nil, 0, fmt.Errorf("encoder output dim %d, manifest says %d", shape[1], g.m.EncoderDim)
 	}
-	valid, err := firstInt(outs[1])
+	outValid, err := firstInt(outs[1])
 	if err != nil {
 		return nil, 0, err
 	}
-	trimmed, err := trimFrames(data, int(shape[1]), int(shape[2]), valid)
+	trimmed, err := trimFrames(data, int(shape[1]), int(shape[2]), outValid)
 	if err != nil {
 		return nil, 0, err
 	}
-	return trimmed, valid, nil
+	return trimmed, outValid, nil
 }
 
 // trimFrames keeps the first `valid` columns of a [rows, cols] row-major matrix.
