@@ -2,6 +2,7 @@ package ortengine
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -107,11 +108,27 @@ func TestTranscribeEdgeAudio(t *testing.T) {
 		}
 	}
 
-	// 40 s: concatenate golden clips until long enough; the reference is built
-	// from the golden texts in the same order and repetition.
+	// Long clip (>= 40 s): all golden clips concatenated, repeated until long enough. The reference is
+	// NeMo's own transcription of exactly this audio (testdata/golden-long/long.json): joining the
+	// per-clip texts is NOT a valid oracle because long context changes decoding.
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "testdata", "golden-long", "long.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ref struct {
+		Clips   []string `json:"clips"`
+		Seconds float64  `json:"seconds"`
+		Text    string   `json:"text"`
+		Tokens  []int    `json:"tokens"`
+	}
+	if err := json.Unmarshal(raw, &ref); err != nil {
+		t.Fatal(err)
+	}
 	names := goldenNames(t)
+	if !slices.Equal(names, ref.Clips) {
+		t.Fatalf("golden clips %v differ from long.json clips %v: regenerate with tools/export/make_long_golden.py", names, ref.Clips)
+	}
 	var long []float32
-	var refs []string
 	for len(long) < 40*asr.SampleRate {
 		for _, n := range names {
 			fx, err := golden.Load(goldenDir(), n)
@@ -119,23 +136,26 @@ func TestTranscribeEdgeAudio(t *testing.T) {
 				t.Fatal(err)
 			}
 			long = append(long, fx.PCM...)
-			refs = append(refs, fx.Text)
 		}
+	}
+	if got := float64(len(long)) / asr.SampleRate; got != ref.Seconds {
+		t.Fatalf("long clip is %.3fs, long.json says %.3fs", got, ref.Seconds)
 	}
 	res, err := e.Transcribe(ctx, long, asr.Options{})
 	if err != nil {
-		t.Fatalf("40s clip: %v", err)
+		t.Fatalf("long clip: %v", err)
 	}
 	if len(res.Words) == 0 {
-		t.Fatalf("40s clip: no words, text %q", res.Text)
+		t.Fatalf("long clip: no words, text %q", res.Text)
 	}
 	if last := res.Words[len(res.Words)-1]; last.End > res.AudioSec+0.1 {
-		t.Errorf("40s clip: last word %q ends at %.2fs, audio %.2fs", last.Text, last.End, res.AudioSec)
+		t.Errorf("long clip: last word %q ends at %.2fs, audio %.2fs", last.Text, last.End, res.AudioSec)
 	}
 	var c eval.Corpus
-	c.Add(strings.Join(refs, " "), res.Text)
-	if w := c.WER(); w > 5.0 {
-		t.Errorf("40s clip: WER %.2f%% > 5%%\n got  %q", w, res.Text)
+	c.Add(ref.Text, res.Text)
+	t.Logf("long clip: WER vs NeMo %.2f%%, tokens identical: %v", c.WER(), slices.Equal(res.Tokens, ref.Tokens))
+	if w := c.WER(); w > 1.0 {
+		t.Errorf("long clip: WER %.2f%% vs NeMo > 1%%\n got  %q\n want %q", w, res.Text, ref.Text)
 	}
 }
 
