@@ -1,0 +1,13 @@
+{
+  "engine": "nemo-cpu-reference",
+  "gpu": "",
+  "date": "2026-10-17",
+  "items": 2620,
+  "audio_sec": 19452.48062500003,
+  "wall_sec": 0,
+  "rtf": 0,
+  "wer": 1.8715763846622033,
+  "latency_ms": {},
+  "vram_mb": 0,
+  "cold_start_ms": 0
+}
