@@ -8,11 +8,12 @@ import (
 	"io"
 	"os"
 	"os/signal"
+
+	"github.com/thegr8yg/ramblocal/internal/win/hotkey"
 )
 
 // probeKeys prints the key names the keyboard reports, for choosing a --key value.
-// TODO: set probeKeys = hotkey.Probe once internal/win/hotkey provides Probe(ctx, io.Writer) error.
-var probeKeys func(ctx context.Context, w io.Writer) error
+var probeKeys func(ctx context.Context, w io.Writer) error = hotkey.Probe
 
 const keysUsage = `usage: ramblocal keys
 
