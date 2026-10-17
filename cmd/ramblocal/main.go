@@ -15,6 +15,8 @@ const usage = `usage: ramblocal <command> [flags]
 commands:
   transcribe <file.wav>   transcribe a 16 kHz WAV file to text
   doctor                  check the model, ONNX Runtime and GPU setup
+  dictate [--key f9]      hold a key, speak, release: the text is pasted (Windows; see dictate -h)
+  keys                    show the key names the keyboard reports (for choosing --key)
   version                 print the version
 `
 
@@ -39,6 +41,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runTranscribe(args[1:], stdout, stderr)
 	case "doctor":
 		return runDoctor(args[1:], stdout, stderr)
+	case "dictate":
+		return runDictate(args[1:], stderr)
+	case "keys":
+		return runKeys(args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintln(stdout, version.Version)
 		return nil
