@@ -18,7 +18,7 @@ import (
 	"github.com/thegr8yg/ramblocal/internal/bench"
 )
 
-// doctorEngine is the part of ortengine.Engine that doctor uses. Tests replace newEngine with a fake.
+// doctorEngine is the part of ortengine.Engine that doctor uses. Tests replace newDoctorEngine with a fake.
 type doctorEngine interface {
 	asr.Engine
 	EP() string
@@ -32,7 +32,7 @@ type gpuInfo struct {
 
 // Hooks replaced by tests so doctor runs without a model, ONNX Runtime or GPU.
 var (
-	newEngine = func(cfg ortengine.Config) (doctorEngine, error) {
+	newDoctorEngine = func(cfg ortengine.Config) (doctorEngine, error) {
 		e, err := ortengine.New(cfg)
 		if err != nil {
 			return nil, err
@@ -159,7 +159,7 @@ func checkGPU(r *doctorReport) (gpuInfo, bool) {
 // one-second silence self-test.
 func checkEngine(r *doctorReport, cfg ortengine.Config, cudaWanted, gpuOK bool, gpuBefore gpuInfo) {
 	t0 := time.Now()
-	eng, err := newEngine(cfg)
+	eng, err := newDoctorEngine(cfg)
 	cold := time.Since(t0)
 	if err != nil {
 		r.line("FAIL", "engine", err.Error())

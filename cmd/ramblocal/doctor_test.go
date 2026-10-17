@@ -54,9 +54,9 @@ func stubDoctor(t *testing.T, eng *fakeEngine, gpu func(call int) (gpuInfo, erro
 	t.Setenv("RAMBLOCAL_MODEL_DIR", "")
 	t.Setenv("RAMBLOCAL_ORT_LIB", "")
 	env := &doctorEnv{}
-	oldEngine, oldGPU := newEngine, queryGPU
-	t.Cleanup(func() { newEngine, queryGPU = oldEngine, oldGPU })
-	newEngine = func(cfg ortengine.Config) (doctorEngine, error) {
+	oldEngine, oldGPU := newDoctorEngine, queryGPU
+	t.Cleanup(func() { newDoctorEngine, queryGPU = oldEngine, oldGPU })
+	newDoctorEngine = func(cfg ortengine.Config) (doctorEngine, error) {
 		env.cfg = &cfg
 		if eng == nil {
 			return nil, errors.New("no execution provider worked")
