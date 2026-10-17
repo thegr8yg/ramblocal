@@ -17,7 +17,7 @@ type Overlay struct{}
 // New creates the window on its own locked OS thread with its own message loop.
 func New() (*Overlay, error) { return nil, errors.New("overlay: not implemented") }
 
-func (o *Overlay) SetState(s State)  {}
+func (o *Overlay) SetState(s State)   {}
 func (o *Overlay) SetLevel(l float32) {} // 0..1 microphone level, only drawn while Listening
 
 // Quit is closed when the user picks Quit from the widget's right-click menu.
