@@ -44,7 +44,9 @@ Smallest thing that does the product's core job.
   contract test pins request and response shapes; load test shows no leaks over 500 requests.
 - **Concept:** HTTP request lifecycle, context cancellation, why a GPU wants a queue.
 
-### Rung 3: hold-to-talk dictation (the MVP of the product)
+### Rung 3: hold-to-talk dictation with a floating pill (the MVP of the product)
+*Status: first implementation merged in PR #3 (`ramblocal dictate`, `ramblocal keys`), untested on real Windows. It was pulled ahead of rungs 2 and 4 because it is the product; the Wispr Flow-style floating pill is part of it.*
+
 - One Windows binary, console only. Hold a key (default `F9`, configurable), speak, release; text is pasted
   into the focused window.
 - Pieces, each tested alone: low-level keyboard hook (hold detection, key swallow), WASAPI capture to 16 kHz mono
