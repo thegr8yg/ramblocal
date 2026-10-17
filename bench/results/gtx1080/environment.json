@@ -1,0 +1,21 @@
+{
+  "date": "2026-10-16",
+  "gpu": "NVIDIA GeForce GTX 1080",
+  "sm": "6.1",
+  "vram_total_mb": 8192,
+  "driver": "581.80",
+  "os": "Windows 11 Pro 10.0.26200",
+  "onnxruntime": "1.31.0 (onnxruntime-win-x64-gpu_cuda12)",
+  "onnxruntime_go": "v1.36.0",
+  "cuda_runtime": "12.9 (pip wheels: nvidia-cuda-runtime-cu12 12.9.79, nvidia-cublas-cu12 12.9.2.10, nvidia-cufft-cu12 11.4.1.4, nvidia-curand-cu12 10.3.10.19); no CUDA Toolkit install",
+  "cudnn_working": "9.10.2.21 (cuda12)",
+  "cudnn_failing": "9.27.0.42 (cuda12): cudnnSetDropoutDescriptor -> CUDNN_STATUS_EXECUTION_FAILED_CUDART when opening the decoder LSTM on sm_61",
+  "model": "nvidia/parakeet-tdt-0.6b-v2 exported with tools/export (NeMo 3.0.0, torch 2.14.1 CPU)",
+  "result": {
+    "ort_cuda_ep_runs_on_pascal": true,
+    "golden_tokens": "5/5 token-exact vs NeMo",
+    "long_clip_55_75s": "WER 0.00%, 290/290 tokens identical to NeMo",
+    "mel_max_abs_diff": 0.000126,
+    "encoder_max_abs_diff": 0.0000153
+  }
+}

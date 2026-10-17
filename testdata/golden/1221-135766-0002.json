@@ -1,0 +1,41 @@
+{
+  "tokens": [
+    162,
+    61,
+    283,
+    784,
+    826,
+    3,
+    293,
+    257,
+    38,
+    157,
+    27,
+    142,
+    206,
+    353,
+    824,
+    585,
+    33,
+    167,
+    102,
+    18,
+    789,
+    368,
+    438,
+    6,
+    827,
+    450,
+    55,
+    841
+  ],
+  "text": "Yet these thoughts affected Hester Prynne less with hope than apprehension.",
+  "mel_shape": [
+    128,
+    482
+  ],
+  "enc_shape": [
+    1024,
+    61
+  ]
+}

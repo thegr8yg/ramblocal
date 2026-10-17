@@ -176,7 +176,7 @@ Latency after release is bounded by the length of the last segment, not the whol
 | Key release → pasted, p50 / p95 | ≤ 150 ms / ≤ 300 ms | stage timers; replay harness with recorded audio |
 | RTF, offline, 1 stream | reported; must not regress > 5% | `rbbench` |
 | WER, LibriSpeech test-clean | ≤ NeMo reference + 0.3 | `rbbench` |
-| VRAM, engine resident | ≤ 3.0 GB (Phase 1), ≤ 1.5 GB (Phase 6, INT8) | NVML in `rbbench` |
+| VRAM, engine resident | ≤ 4.0 GB (ORT FP32; the FP32 weights alone are 2.4 GB), ≤ 1.5 GB (INT8, MVP ladder rung 9) | NVML in `rbbench` |
 | Cold start to ready | ≤ 5 s | `rbbench --cold` |
 | Idle CPU | < 1% | Windows perf counter, manual check per release |
 | API throughput | reported, audio-seconds per second at concurrency 1/4/8 | `rbbench --target <url> --concurrency N` |
